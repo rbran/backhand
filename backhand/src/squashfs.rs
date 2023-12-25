@@ -650,15 +650,12 @@ impl<'b> Squashfs<'b> {
         force: bool,
     ) -> Result<(), BackhandError> {
         use std::fs::{self, File};
-        use std::io::{self};
-        use std::os::unix::fs::lchown;
+        use std::io;
         use std::path::{Component, Path};
 
-        use nix::{
-            libc::geteuid,
-            sys::stat::{dev_t, mknod, mode_t, umask, utimensat, Mode, SFlag, UtimensatFlags},
-            sys::time::TimeSpec,
-        };
+        use nix::sys::stat::{dev_t, mknod, mode_t, umask, utimensat, Mode, SFlag, UtimensatFlags};
+        use nix::sys::time::TimeSpec;
+        use nix::unistd::{fchownat, geteuid, FchownatFlags, Gid, Uid};
         use rayon::prelude::*;
 
         // Quick hack to ensure we reset `umask` even when we return due to an error
@@ -677,7 +674,7 @@ impl<'b> Squashfs<'b> {
             }
         }
 
-        let root_process = unsafe { geteuid() == 0 };
+        let root_process = geteuid().is_root();
 
         // FIXME: Do we want to set `umask` here, or leave it up to the caller?
         let _umask_guard = root_process.then(|| UmaskGuard::new(Mode::from_bits(0).unwrap()));
@@ -758,12 +755,21 @@ impl<'b> Squashfs<'b> {
                         // set attributes, but special to not follow the symlink
                         // TODO: unify with set_attributes?
                         if root_process {
-                            // TODO: Use (unix_chown) when not nightly: https://github.com/rust-lang/rust/issues/88989
-                            lchown(&filepath, Some(node.header.uid), Some(node.header.gid))
-                                .map_err(|e| BackhandError::SetAttributes {
-                                    source: e,
+                            let uid = Uid::from_raw(node.header.uid);
+                            let gid = Gid::from_raw(node.header.gid);
+                            fchownat(
+                                None,
+                                &filepath,
+                                Some(uid),
+                                Some(gid),
+                                FchownatFlags::NoFollowSymlink,
+                            )
+                            .map_err(|e| {
+                                BackhandError::SetAttributes {
+                                    source: e.into(),
                                     path: filepath.to_path_buf(),
-                                })?;
+                                }
+                            })?;
                         }
 
                         // TODO Use (file_set_times) when not nightly: https://github.com/rust-lang/rust/issues/98245
@@ -777,7 +783,7 @@ impl<'b> Squashfs<'b> {
                             UtimensatFlags::NoFollowSymlink,
                         )
                         .map_err(|e| BackhandError::SetUtimes {
-                            source: e,
+                            source: e.into(),
                             path: filepath.clone(),
                         })?;
                         trace!(from=%link.display(), to=%filepath.display(), "unsquashed symlink");
@@ -799,7 +805,7 @@ impl<'b> Squashfs<'b> {
                             dev_t::try_from(*device_number).unwrap(),
                         )
                         .map_err(|e| BackhandError::UnsquashCharDev {
-                            source: e,
+                            source: e.into(),
                             path: filepath.clone(),
                         })?;
                         set_attributes(&filepath, &node.header, root_process, true)?;
@@ -813,7 +819,7 @@ impl<'b> Squashfs<'b> {
                             dev_t::try_from(*device_number).unwrap(),
                         )
                         .map_err(|e| BackhandError::UnsquashBlockDev {
-                            source: e,
+                            source: e.into(),
                             path: filepath.clone(),
                         })?;
                         set_attributes(&filepath, &node.header, root_process, true)?;
@@ -847,21 +853,26 @@ fn set_attributes(
     is_file: bool,
 ) -> Result<(), BackhandError> {
     // TODO Use (file_set_times) when not nightly: https://github.com/rust-lang/rust/issues/98245
-    use nix::{sys::stat::utimes, sys::time::TimeVal};
-    use std::os::unix::fs::lchown;
+    use nix::sys::stat::utimes;
+    use nix::sys::time::TimeVal;
+    use nix::unistd::{fchownat, FchownatFlags, Gid, Uid};
+    use std::fs::Permissions;
+    use std::os::unix::fs::PermissionsExt;
 
-    use std::{fs::Permissions, os::unix::fs::PermissionsExt};
     let timeval = TimeVal::new(header.mtime as _, 0);
     utimes(path, &timeval, &timeval)
-        .map_err(|e| BackhandError::SetUtimes { source: e, path: path.to_path_buf() })?;
+        .map_err(|e| BackhandError::SetUtimes { source: e.into(), path: path.to_path_buf() })?;
 
     let mut mode = u32::from(header.permissions);
 
     // Only chown when root
     if root_process {
         // TODO: Use (unix_chown) when not nightly: https://github.com/rust-lang/rust/issues/88989
-        lchown(path, Some(header.uid), Some(header.gid))
-            .map_err(|e| BackhandError::SetAttributes { source: e, path: path.to_path_buf() })?;
+        let uid = Uid::from_raw(header.uid);
+        let gid = Gid::from_raw(header.gid);
+        fchownat(None, path, Some(uid), Some(gid), FchownatFlags::NoFollowSymlink).map_err(
+            |e| BackhandError::SetAttributes { source: e.into(), path: path.to_path_buf() },
+        )?;
     } else if is_file {
         // bitwise-not if not rooted (disable write permissions for user/group). Following
         // squashfs-tools/unsquashfs behavior

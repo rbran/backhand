@@ -18,7 +18,7 @@ keywords = ["filesystem", "deku", "squashfs", "linux"]
 categories = ["filesystem", "parsing"]
 
 [workspace.dependencies]
-nix = { version = "0.27.1", default-features = false, features = ["fs"] }
+nix = { version = "0.27.1", default-features = false, features = ["fs", "user"] }
 rayon = "1.8.0"
 
 # Release(dist) binaries are setup for maximum runtime speed, at the cost of CI time

@@ -66,11 +66,11 @@ pub enum BackhandError {
 
     #[cfg(feature = "util")]
     #[error("failed to unsquash character device '{path:?}'")]
-    UnsquashCharDev { source: nix::Error, path: std::path::PathBuf },
+    UnsquashCharDev { source: std::io::Error, path: std::path::PathBuf },
 
     #[cfg(feature = "util")]
     #[error("failed to unsquash block device '{path:?}'")]
-    UnsquashBlockDev { source: nix::Error, path: std::path::PathBuf },
+    UnsquashBlockDev { source: std::io::Error, path: std::path::PathBuf },
 
     #[cfg(feature = "util")]
     #[error("failed to set attributes for '{path:?}'")]
@@ -78,7 +78,7 @@ pub enum BackhandError {
 
     #[cfg(feature = "util")]
     #[error("failed to set utimes for '{path:?}'")]
-    SetUtimes { source: nix::Error, path: std::path::PathBuf },
+    SetUtimes { source: std::io::Error, path: std::path::PathBuf },
 }
 
 impl From<BackhandError> for io::Error {
